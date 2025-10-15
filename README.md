@@ -95,7 +95,33 @@ outputs = o.model.generate(input_ids=input_ids,  past_key_values=past_key_values
 answer = o.tokenizer.decode(outputs[0][input_ids.shape[-1]:], skip_special_tokens=False)
 print(answer)
 ```
-or run sample python script as `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python example.py` 
+or run sample python script as `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python example.py`
+
+### Load any Hugging Face model
+
+For quick experiments you can point `Inference` at any text generation model that is
+available on Hugging Face Hub – simply pass the repository id instead of one of the
+pre-registered aliases:
+
+```python
+from ollm import Inference
+
+o = Inference("meta-llama/Llama-3.2-1B-Instruct", device="cuda:0")
+o.ini_model(models_dir="./models/")
+```
+
+oLLM will download and cache the model under `models/meta-llama__Llama-3.2-1B-Instruct`
+and load it with Hugging Face's `AutoModelForCausalLM`.
+
+Starting with v1.0 the `Inference` helper inspects the model's `AutoConfig` to see if it
+belongs to a known architecture such as Llama, Gemma 3, Qwen3 Next, or Voxtral. When a
+match is found the corresponding adapter is wired in automatically, so any repo that
+declares the same `model_type` gets the streaming-weight treatment without editing
+Python code. If the architecture is unknown the generic Hugging Face loader is used as a
+fallback.
+
+See [`docs/model_adapters.md`](docs/model_adapters.md) for a deeper explanation of how the
+model specific adapters work and what features they enable.
 
 **More samples**
 - [gemma3-12B image+text](https://github.com/Mega4alik/ollm/blob/main/example_image.py)
