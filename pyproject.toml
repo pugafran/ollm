@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "psutil"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ollm"
+version = "1.0.0"
+description = "LLM Inference for Large-Context Offline Workloads"
+authors = [
+  { name="Anuar Sharafudinov", email="anuarsh@ailabs.us" }
+]
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "torch>2.6.0", #tested: 2.8.0
+    "transformers>=4.57.0", #tested: 4.55.4, 4.56.1
+    "accelerate",
+    "flash-linear-attention",
+    "flash-attn" #tested: 2.7.4.post1
+]
+
+[project.urls]
+"Homepage" = "https://github.com/Mega4alik/ollm"
+"Bug Tracker" = "https://github.com/Mega4alik/ollm/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
