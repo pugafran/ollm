@@ -2,48 +2,15 @@ import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 import torch
+from torch import nn
 from ollm import Inference, TextStreamer
 
-# Monkey patch Qwen2MoeAttention to bypass hidden_size check and fix reshape
+# Monkey patch Qwen2MoeAttention to derive head dimensions from loaded weights and fix reshape
 from transformers.models.qwen2_moe import modeling_qwen2_moe
 from transformers.models.qwen2_moe.modeling_qwen2_moe import apply_rotary_pos_emb, repeat_kv
-from torch import nn
 import math
 from typing import Optional, Tuple
 
-original_init = modeling_qwen2_moe.Qwen2MoeAttention.__init__
-
-def new_init(self, config, layer_idx: int = None):
-    super(modeling_qwen2_moe.Qwen2MoeAttention, self).__init__()
-    self.config = config
-    self.layer_idx = layer_idx
-    if layer_idx is None:
-        print(f"Instantiating Qwen2MoeAttention {layer_idx}...")
-
-    self.hidden_size = config.hidden_size
-    self.num_heads = config.num_attention_heads
-
-    # Algunos checkpoints reportan un head_dim incorrecto en la configuración
-    # (por ejemplo 64 en lugar de 128), lo que provoca que el reshape falle con
-    # errores del tipo "shape '[1, 30, 2048]' is invalid for input of size 122880".
-    # Forzamos head_dim a hidden_size // num_heads para que coincida con los
-    # pesos de proyección del modelo.
-    self.head_dim = self.hidden_size // self.num_heads
-
-    self.num_key_value_heads = config.num_key_value_heads
-    self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-    self.max_position_embeddings = config.max_position_embeddings
-    self.rope_theta = config.rope_theta
-    self.is_causal = True
-    self.attention_dropout = config.attention_dropout
-
-    # Definimos las capas lineales con el head_dim corregido
-    self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.qkv_bias)
-    self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.qkv_bias)
-    self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.qkv_bias)
-    self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-
-    self.rotary_emb = modeling_qwen2_moe.Qwen2MoeRotaryEmbedding(config=self.config)
 
 def new_forward(
     self,
@@ -61,10 +28,12 @@ def new_forward(
     key_states = self.k_proj(hidden_states)
     value_states = self.v_proj(hidden_states)
 
-    # El view ahora usará el self.head_dim corregido, evitando el error de forma
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    head_dim = query_states.shape[-1] // self.num_heads
+    kv_head_dim = key_states.shape[-1] // self.num_key_value_heads
+
+    query_states = query_states.view(bsz, q_len, self.num_heads, head_dim).transpose(1, 2)
+    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, kv_head_dim).transpose(1, 2)
+    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, kv_head_dim).transpose(1, 2)
 
     cos, sin = self.rotary_emb(value_states, position_ids)
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
@@ -76,7 +45,7 @@ def new_forward(
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
 
     if attention_mask is not None:
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
@@ -86,15 +55,14 @@ def new_forward(
     attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
     attn_output = torch.matmul(attn_weights, value_states)
 
-    if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+    if attn_output.size() != (bsz, self.num_heads, q_len, head_dim):
         raise ValueError(
-            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, head_dim)}, but is"
             f" {attn_output.size()}"
         )
 
     attn_output = attn_output.transpose(1, 2).contiguous()
-    # FIX: reshape to num_heads * head_dim instead of hidden_size
-    attn_output = attn_output.reshape(bsz, q_len, self.num_heads * self.head_dim)
+    attn_output = attn_output.reshape(bsz, q_len, self.num_heads * head_dim)
 
     attn_output = self.o_proj(attn_output)
 
@@ -104,7 +72,6 @@ def new_forward(
     return attn_output, attn_weights, past_key_values
 
 
-modeling_qwen2_moe.Qwen2MoeAttention.__init__ = new_init
 modeling_qwen2_moe.Qwen2MoeAttention.forward = new_forward
 
 
