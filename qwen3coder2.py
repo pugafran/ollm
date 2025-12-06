@@ -22,7 +22,10 @@ def new_init(self, config, layer_idx: int = None):
     
     self.hidden_size = config.hidden_size
     self.num_heads = config.num_attention_heads
-    self.head_dim = getattr(config, "head_dim", self.hidden_size // self.num_heads)
+    # Algunos checkpoints publican un head_dim que no coincide con los pesos
+    # (por ejemplo 64 en lugar de 128). Forzamos el valor derivado de
+    # hidden_size // num_heads para que el reshape no falle durante la atención.
+    self.head_dim = self.hidden_size // self.num_heads
     self.num_key_value_heads = config.num_key_value_heads
     self.num_key_value_groups = self.num_heads // self.num_key_value_heads
     self.max_position_embeddings = config.max_position_embeddings
