@@ -60,7 +60,8 @@ class Inference:
 			"qwen3-next-80B": "Qwen/Qwen3-Next-80B-A3B-Instruct",
 			"gemma3-12B": "google/gemma-3-12b-it",
 			"voxtral-small-24B": "mistralai/Voxtral-Small-24B-2507",
-			"qwen3-coder": "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+			"qwen3-coder": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+			"qwen3-coder-awq": "cpatonn/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit"
 		}
 		url = urls[self.model_id]
 		print(f"Downloading {url} ...")
@@ -68,7 +69,7 @@ class Inference:
 
 	
 	def ini_model(self, models_dir="./models/", force_download=False):
-		models_list = ["llama3-1B-chat", "llama3-3B-chat", "llama3-8B-chat", "gpt-oss-20B", "qwen3-next-80B", "gemma3-12B", "voxtral-small-24B", "qwen3-coder"]
+		models_list = ["llama3-1B-chat", "llama3-3B-chat", "llama3-8B-chat", "gpt-oss-20B", "qwen3-next-80B", "gemma3-12B", "voxtral-small-24B", "qwen3-coder", "qwen3-coder-awq"]
 		if self.model_id not in models_list:
 			raise ValueError("Incorrect model id. It must be one of", models_list)
 		
@@ -85,7 +86,7 @@ class Inference:
 			qwen3_next.loader = MoEWeightsLoader(model_dir)
 			qwen3_next.stats = self.stats
 			self.model = qwen3_next.MyQwen3NextForCausalLM.from_pretrained(model_dir, torch_dtype=torch.bfloat16, device_map="cpu", attn_implementation=get_attn_implementation(), low_cpu_mem_usage=True, ignore_mismatched_sizes=True)
-		elif self.model_id=="qwen3-coder":
+		elif self.model_id in ["qwen3-coder", "qwen3-coder-awq"]:
 			from . import qwen3_coder
 			self.model = qwen3_coder.Qwen3CoderWrapper(model_dir, device=self.device)
 		elif self.model_id=="gemma3-12B":

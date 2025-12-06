@@ -22,22 +22,7 @@ def new_init(self, config, layer_idx: int = None):
     
     self.hidden_size = config.hidden_size
     self.num_heads = config.num_attention_heads
-    
-    # --- CORRECCIÓN DE DIMENSIONES (FIX) ---
-    # Calculamos el head_dim base
-    calculated_head_dim = self.hidden_size // self.num_heads
-    self.head_dim = getattr(config, "head_dim", calculated_head_dim)
-
-    # Heurística para Qwen2.5/3: Si head_dim * num_heads es igual a hidden_size,
-    # pero los pesos reales son el doble (causando el error 4096 vs 2048),
-    # forzamos el tamaño correcto duplicando head_dim.
-    # El error 'invalid for input of size 122880' (4096 cols) vs 'expected 2048' confirma esto.
-    if (self.head_dim * self.num_heads) == self.hidden_size:
-        self.head_dim = self.head_dim * 2
-        if layer_idx == 0: # Imprimir solo una vez
-            print(f" -> Ajustando head_dim a {self.head_dim} (x2) para coincidir con los pesos del modelo.")
-    # ---------------------------------------
-
+    self.head_dim = getattr(config, "head_dim", self.hidden_size // self.num_heads)
     self.num_key_value_heads = config.num_key_value_heads
     self.num_key_value_groups = self.num_heads // self.num_key_value_heads
     self.max_position_embeddings = config.max_position_embeddings
@@ -45,7 +30,8 @@ def new_init(self, config, layer_idx: int = None):
     self.is_causal = True
     self.attention_dropout = config.attention_dropout
 
-    # Definimos las capas lineales con el head_dim corregido
+    # BYPASS CHECK: if (self.head_dim * self.num_heads) != self.hidden_size: ...
+
     self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.qkv_bias)
     self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.qkv_bias)
     self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.qkv_bias)
@@ -69,7 +55,6 @@ def new_forward(
     key_states = self.k_proj(hidden_states)
     value_states = self.v_proj(hidden_states)
 
-    # El view ahora usará el self.head_dim corregido (más grande), evitando el error de forma
     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -115,16 +100,18 @@ modeling_qwen2_moe.Qwen2MoeAttention.__init__ = new_init
 modeling_qwen2_moe.Qwen2MoeAttention.forward = new_forward
 
 def main():
-    model_id = "qwen3-coder" # Maps to Qwen/Qwen3-Coder-30B-A3B-Instruct in inference.py
-    
-    print(f"Initializing {model_id}...")
-    # device="cuda:0" is standard
-    o = Inference(model_id, device="cuda:0", logging=True) 
-    
-    # This will download the model if not present
-    # You can change models_dir to your preferred location
-    models_dir = "./models/"
-    o.ini_model(models_dir=models_dir, force_download=False)
+    try:
+        model_id = "qwen3-coder-awq" 
+        print(f"Attempting to initialize {model_id}...")
+        o = Inference(model_id, device="cuda:0", logging=True) 
+        models_dir = "./models/"
+        o.ini_model(models_dir=models_dir, force_download=False)
+    except Exception as e:
+        print(f"\nFailed to load {model_id} (error: {e})")
+        print("Falling back to base model 'qwen3-coder'...")
+        model_id = "qwen3-coder"
+        o = Inference(model_id, device="cuda:0", logging=True)
+        o.ini_model(models_dir=models_dir, force_download=False)
     
     # Offload layers to CPU for speed boost (optional, adjust as needed)
     # Since this is a large model (30B), offloading is likely needed on 8GB VRAM
@@ -159,6 +146,10 @@ def main():
         print("\nAssistant: ", end="", flush=True)
         
         # Generate
+        # Note: past_key_values might need to be handled if we want multi-turn with caching, 
+        # but for simple one-shot or if the wrapper handles it, we can pass it.
+        # The wrapper delegates to model.generate, which handles internal caching if use_cache=True (default).
+        
         try:
             outputs = o.model.generate(
                 input_ids=input_ids, 
@@ -169,8 +160,6 @@ def main():
             )
         except Exception as e:
             print(f"\nError during generation: {e}")
-            import traceback
-            traceback.print_exc()
 
 if __name__ == "__main__":
     main()
