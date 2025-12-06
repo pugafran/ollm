@@ -23,20 +23,8 @@ def new_init(self, config, layer_idx: int = None):
     self.hidden_size = config.hidden_size
     self.num_heads = config.num_attention_heads
     
-    # --- CORRECCIÓN DE DIMENSIONES (FIX) ---
-    # Calculamos el head_dim base
-    calculated_head_dim = self.hidden_size // self.num_heads
-    self.head_dim = getattr(config, "head_dim", calculated_head_dim)
-
-    # Heurística para Qwen2.5/3: Si head_dim * num_heads es igual a hidden_size,
-    # pero los pesos reales son el doble (causando el error 4096 vs 2048),
-    # forzamos el tamaño correcto duplicando head_dim.
-    # El error 'invalid for input of size 122880' (4096 cols) vs 'expected 2048' confirma esto.
-    if (self.head_dim * self.num_heads) == self.hidden_size:
-        self.head_dim = self.head_dim * 2
-        if layer_idx == 0: # Imprimir solo una vez
-            print(f" -> Ajustando head_dim a {self.head_dim} (x2) para coincidir con los pesos del modelo.")
-    # ---------------------------------------
+    # Calcular head_dim de manera segura desde la configuración
+    self.head_dim = getattr(config, "head_dim", self.hidden_size // self.num_heads)
 
     self.num_key_value_heads = config.num_key_value_heads
     self.num_key_value_groups = self.num_heads // self.num_key_value_heads
@@ -69,10 +57,11 @@ def new_forward(
     key_states = self.k_proj(hidden_states)
     value_states = self.v_proj(hidden_states)
 
-    # El view ahora usará el self.head_dim corregido (más grande), evitando el error de forma
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    # Calcular dinámicamente head_dim en tiempo de ejecución para coincidir con el tensor
+    head_dim = query_states.shape[-1] // self.num_heads
+    query_states = query_states.view(bsz, q_len, self.num_heads, head_dim).transpose(1, 2)
+    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, head_dim).transpose(1, 2)
+    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, head_dim).transpose(1, 2)
 
     cos, sin = self.rotary_emb(value_states, position_ids)
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
@@ -84,7 +73,7 @@ def new_forward(
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
 
     if attention_mask is not None:
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
@@ -94,15 +83,15 @@ def new_forward(
     attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
     attn_output = torch.matmul(attn_weights, value_states)
 
-    if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+    if attn_output.size() != (bsz, self.num_heads, q_len, head_dim):
         raise ValueError(
-            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, head_dim)}, but is"
             f" {attn_output.size()}"
         )
 
     attn_output = attn_output.transpose(1, 2).contiguous()
-    # FIX: reshape to num_heads * head_dim instead of hidden_size
-    attn_output = attn_output.reshape(bsz, q_len, self.num_heads * self.head_dim)
+    # Usar head_dim dinámico para evitar errores de reshape
+    attn_output = attn_output.reshape(bsz, q_len, self.num_heads * head_dim)
 
     attn_output = self.o_proj(attn_output)
 
